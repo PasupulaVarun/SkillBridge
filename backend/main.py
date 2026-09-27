@@ -7,8 +7,19 @@ from pydantic import BaseModel, Field, EmailStr
 from sqlalchemy import create_engine, String, Integer, Float, Text, select, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, Session, sessionmaker
 
-DATABASE_URL=os.getenv("DATABASE_URL","sqlite:///./skillbridge.db")
-engine=create_engine(DATABASE_URL,connect_args={"check_same_thread":False} if DATABASE_URL.startswith("sqlite") else {})
+RAW_DATABASE_URL=os.getenv("DATABASE_URL","").strip()
+# Render should inject a real postgres:// or postgresql:// URL. If an old/manual
+# deployment leaves a placeholder or malformed value, fall back safely to SQLite
+# instead of crashing during import. A valid DATABASE_URL always wins.
+if RAW_DATABASE_URL.startswith(("postgres://","postgresql://","sqlite:///")):
+    DATABASE_URL=RAW_DATABASE_URL
+else:
+    DATABASE_URL="sqlite:///./skillbridge.db"
+engine=create_engine(
+    DATABASE_URL,
+    connect_args={"check_same_thread":False} if DATABASE_URL.startswith("sqlite") else {},
+    pool_pre_ping=True
+)
 SessionLocal=sessionmaker(bind=engine,autoflush=False,autocommit=False)
 class Base(DeclarativeBase): pass
 
@@ -221,3 +232,13 @@ def seed(s:Session=Depends(db)):
         for x in [("Industry Internships","Internship","Industry Network","Find structured internship opportunities.","Student"),("Live Industry Projects","Project","Industry Network","Work on real problem statements.","Student"),("Faculty FDP & Training","FDP","Industry Network","Industry-oriented faculty development.","Academician"),("Research Collaboration","Research","Innovation Network","Connect institutions and industry around research.","Academician"),("Innovation Challenges","Challenge","Industry Network","Solve real-world challenges.","All")]:
             s.add(Collaboration(title=x[0],kind=x[1],provider=x[2],description=x[3],target_role=x[4]))
     s.commit();return {"ok":True}
+
+
+# Seed the demo environment automatically after the module is fully loaded.
+# This keeps a fresh prototype deployment immediately usable while preserving
+# any existing data.
+try:
+    with SessionLocal() as _startup_session:
+        seed(_startup_session)
+except Exception as _seed_error:
+    print(f"Startup seed skipped: {_seed_error}")
