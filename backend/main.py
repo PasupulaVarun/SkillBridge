@@ -174,7 +174,27 @@ def market_jobs(q:Optional[str]="software engineer",location:Optional[str]="remo
         except Exception as e: print(f"Public market feed unavailable: {e}")
     MARKET_CACHE.update({"at":now,"data":jobs,"source":source})
     return {"jobs":jobs,"source":source,"fetched_at":datetime.fromtimestamp(now,timezone.utc).isoformat(),"live":bool(jobs),"cache_seconds":MARKET_TTL}
+
 @app.get("/api/opportunities")
+def opportunities(q:Optional[str]="",location:Optional[str]="",kind:Optional[str]="",skills:Optional[str]="",remote:Optional[bool]=None,page:int=1,limit:int=20,s:Session=Depends(db)):
+    page=max(1,page); limit=max(5,min(limit,50)); rows=list(s.scalars(select(Opportunity).where(Opportunity.status!="Closed").order_by(Opportunity.id.desc())).all())
+    wanted=[norm(x) for x in (skills or "").split(",") if x.strip()]
+    out=[]
+    for o in rows:
+        text=(o.title+" "+o.provider+" "+o.description).lower()
+        if q and q.lower() not in text: continue
+        if location and location.lower() not in o.location.lower(): continue
+        if kind and kind.lower()!=o.type.lower(): continue
+        if remote is True and "remote" not in o.location.lower(): continue
+        if wanted and not any(w in {norm(x) for x in parts(o.skills)} for w in wanted): continue
+        out.append(op(o))
+    start=(page-1)*limit
+    return {"items":out[start:start+limit],"total":len(out),"page":page,"limit":limit,"pages":(len(out)+limit-1)//limit if out else 0}
+
+@app.get("/api/opportunities/all")
+def opportunities_all(s:Session=Depends(db)):
+    return [op(x) for x in s.scalars(select(Opportunity).where(Opportunity.status!="Closed").order_by(Opportunity.id.desc())).all()]
+
 def opportunities(kind:Optional[str]=None,s:Session=Depends(db)):
     q=select(Opportunity).where(Opportunity.status!="Closed")
     if kind: q=q.where(Opportunity.type==kind)
@@ -260,6 +280,33 @@ def collaborations(role_name:Optional[str]=None,s:Session=Depends(db)):
 @app.post("/api/collaborations",status_code=201)
 def add_collab(x:CollaborationIn,u:User=Depends(role("Academician","Industry")),s:Session=Depends(db)):
     c=Collaboration(title=x.title,kind=x.kind,provider=x.provider or u.organization or u.name,description=x.description,target_role=x.target_role);s.add(c);s.commit();s.refresh(c);return {"id":c.id,"title":c.title,"kind":c.kind,"provider":c.provider,"description":c.description,"target_role":c.target_role,"status":c.status}
+
+
+@app.get("/api/skill-gaps")
+def skill_gaps(u:User=Depends(role("Student")),s:Session=Depends(db)):
+    p=s.scalar(select(SkillProfile).where(SkillProfile.owner_id==u.id))
+    have={norm(x) for x in parts(p.skills if p else "")}
+    demand={}
+    for o in s.scalars(select(Opportunity).where(Opportunity.status!="Closed")).all():
+        for x in parts(o.skills):
+            k=norm(x); demand[k]=demand.get(k,0)+1
+    gaps=sorted(((k,n) for k,n in demand.items() if k not in have),key=lambda x:x[1],reverse=True)
+    learning=[]
+    for item in s.scalars(select(LearningItem)).all():
+        matched=[x for x in parts(item.skills) if norm(x) in {g[0] for g in gaps}]
+        if matched: learning.append({"id":item.id,"title":item.title,"provider":item.provider,"skills":parts(item.skills),"target_gaps":matched})
+    return {"current_skills":sorted(have),"priority_gaps":[{"skill":k,"market_demand":n,"priority":min(100,40+n*15)} for k,n in gaps[:10]],"recommended_learning":learning[:10]}
+
+@app.get("/api/notifications")
+def notifications(u:User=Depends(current),s:Session=Depends(db)):
+    items=[]
+    if u.role=="Student":
+        for a in s.scalars(select(Application).where(Application.student_id==u.id).order_by(Application.id.desc()).limit(10)).all():
+            o=s.get(Opportunity,a.opportunity_id)
+            items.append({"type":"application","title":o.title if o else "Application","message":"Application status: "+a.status,"date":a.created_at})
+        for o in s.scalars(select(Opportunity).where(Opportunity.status!="Closed").order_by(Opportunity.id.desc()).limit(5)).all():
+            items.append({"type":"opportunity","title":"New opportunity","message":o.title,"date":datetime.now(timezone.utc).isoformat()})
+    return sorted(items,key=lambda x:x["date"],reverse=True)[:12]
 
 @app.get("/api/analytics")
 def analytics(u:User=Depends(role("Institution")),s:Session=Depends(db)):
