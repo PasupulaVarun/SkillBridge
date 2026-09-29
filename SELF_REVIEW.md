@@ -39,3 +39,19 @@
 - Add WebSocket/SSE notifications for application status and new matches.
 - Add email verification/password reset and rate limiting.
 - Replace heuristic matching with persisted pgvector embeddings.
+
+## v14 SkillBridge 2.0 completion
+- Marketplace now supports live search, type filtering, skill filtering and pagination-ready API responses.
+- Student Skill Gap Intelligence compares profile skills with current SkillBridge opportunity demand.
+- Learning recommendations can be tied directly to identified market gaps.
+- Notifications API exposes application updates and new opportunity signals.
+- Institution analytics already exposes student-skill supply versus opportunity demand.
+- External market data remains explicitly separated from internal SkillBridge opportunity data.
+
+### Still required for a true production marketplace
+- Licensed India-focused market data provider and explicit provider terms.
+- Persistent user notification/read-state model.
+- WebSocket/SSE event infrastructure.
+- pgvector extension + persisted embeddings + background embedding jobs.
+- Database migrations instead of create-all schema evolution.
+- Rate limiting, email verification, password reset and audit logs.
