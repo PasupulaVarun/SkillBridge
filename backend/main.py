@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta, timezone
 import hashlib, secrets, re, os
 from typing import Optional, List
-from fastapi import FastAPI, Depends, HTTPException, Header
+from fastapi import FastAPI, Depends, HTTPException, Header, Cookie, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, EmailStr
 from sqlalchemy import create_engine, String, Integer, Float, Text, select, func
@@ -44,7 +44,9 @@ class Collaboration(Base):
 Base.metadata.create_all(engine)
 
 app=FastAPI(title="SkillBridge API",version="2.0.0")
-app.add_middleware(CORSMiddleware,allow_origins=["*"],allow_credentials=False,allow_methods=["*"],allow_headers=["*"])
+FRONTEND_ORIGIN=os.getenv("FRONTEND_ORIGIN","").strip()
+ALLOWED_ORIGINS=[x.strip() for x in FRONTEND_ORIGIN.split(",") if x.strip()] or ["http://localhost:5500","http://127.0.0.1:5500"]
+app.add_middleware(CORSMiddleware,allow_origins=ALLOWED_ORIGINS,allow_credentials=True,allow_methods=["*"],allow_headers=["*"])
 ROLES={"Student","Academician","Industry","Institution"}
 
 def db():
@@ -61,9 +63,12 @@ def vp(password,stored):
         return secrets.compare_digest(hashlib.pbkdf2_hmac("sha256",password.encode(),salt.encode(),120000).hex(),digest)
     except Exception: return False
 def payload(u): return {"id":u.id,"name":u.name,"email":u.email,"role":u.role,"organization":u.organization}
-def current(authorization:Optional[str]=Header(None),s:Session=Depends(db)):
-    if not authorization or not authorization.lower().startswith("bearer "): raise HTTPException(401,"Authentication required")
-    t=authorization.split(" ",1)[1].strip(); st=s.scalar(select(SessionToken).where(SessionToken.token==t))
+def current(authorization:Optional[str]=Header(None),skillbridge_session:Optional[str]=Cookie(None),s:Session=Depends(db)):
+    t=(skillbridge_session or "").strip()
+    if not t and authorization and authorization.lower().startswith("bearer "):
+        t=authorization.split(" ",1)[1].strip()
+    if not t: raise HTTPException(401,"Authentication required")
+    st=s.scalar(select(SessionToken).where(SessionToken.token==t))
     if not st or datetime.fromisoformat(st.expires_at)<=datetime.now(timezone.utc): raise HTTPException(401,"Session expired or invalid")
     u=s.get(User,st.user_id)
     if not u: raise HTTPException(401,"User not found")
@@ -93,6 +98,9 @@ class ApplicationIn(BaseModel): opportunity_id:int
 class ProfileIn(BaseModel): technical_score:float=0; soft_score:float=0; strengths:List[str]=[]; gaps:List[str]=[]; skills:List[str]=[]; interests:List[str]=[]
 class PortfolioIn(BaseModel): title:str; kind:str="Project"; description:str=""; skills:List[str]=[]
 class ProgressIn(BaseModel): progress:int=Field(ge=0,le=100)
+class PasswordChange(BaseModel):
+    current_password:str=Field(min_length=6)
+    new_password:str=Field(min_length=8)
 class CollaborationIn(BaseModel): title:str; kind:str="Workshop"; provider:str=""; description:str=""; target_role:str="Student"
 
 def op(o): return {"id":o.id,"title":o.title,"type":o.type,"provider":o.provider,"location":o.location,"skills":parts(o.skills),"description":o.description,"status":o.status}
@@ -107,18 +115,30 @@ def register(x:Register,s:Session=Depends(db)):
     if s.scalar(select(User).where(User.email==x.email.lower())): raise HTTPException(409,"Email already registered")
     u=User(name=x.name.strip(),email=x.email.lower(),password_hash=hp(x.password),role=x.role,organization=x.organization.strip()); s.add(u); s.commit(); s.refresh(u); return {"user":payload(u)}
 @app.post("/api/auth/login")
-def login(x:Login,s:Session=Depends(db)):
+def login(x:Login,response:Response,s:Session=Depends(db)):
     u=s.scalar(select(User).where(User.email==x.email.lower()))
     if not u or not vp(x.password,u.password_hash): raise HTTPException(401,"Invalid email or password")
     exp=datetime.now(timezone.utc)+timedelta(hours=12); token=secrets.token_urlsafe(48); s.add(SessionToken(token=token,user_id=u.id,expires_at=exp.isoformat())); s.commit()
-    return {"access_token":token,"token_type":"bearer","expires_at":exp.isoformat(),"user":payload(u)}
+    response.set_cookie("skillbridge_session",token,max_age=12*60*60,httponly=True,secure=True,samesite="none",path="/")
+    return {"expires_at":exp.isoformat(),"user":payload(u)}
 @app.get("/api/auth/me")
 def me(u:User=Depends(current)): return payload(u)
+
+@app.post("/api/auth/change-password")
+def change_password(x:PasswordChange,u:User=Depends(current),s:Session=Depends(db)):
+    if not vp(x.current_password,u.password_hash): raise HTTPException(401,"Current password is incorrect")
+    u.password_hash=hp(x.new_password); s.commit()
+    s.query(SessionToken).filter(SessionToken.user_id==u.id).delete(synchronize_session=False); s.commit()
+    return {"ok":True,"message":"Password changed; please log in again."}
+
 @app.post("/api/auth/logout")
-def logout(authorization:Optional[str]=Header(None),s:Session=Depends(db)):
-    if authorization and authorization.lower().startswith("bearer "):
-        st=s.scalar(select(SessionToken).where(SessionToken.token==authorization.split(" ",1)[1].strip()))
+def logout(response:Response,authorization:Optional[str]=Header(None),skillbridge_session:Optional[str]=Cookie(None),s:Session=Depends(db)):
+    t=(skillbridge_session or "").strip()
+    if not t and authorization and authorization.lower().startswith("bearer "): t=authorization.split(" ",1)[1].strip()
+    if t:
+        st=s.scalar(select(SessionToken).where(SessionToken.token==t))
         if st: s.delete(st); s.commit()
+    response.delete_cookie("skillbridge_session",path="/")
     return {"ok":True}
 
 @app.get("/api/opportunities")
