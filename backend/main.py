@@ -1,5 +1,5 @@
 from datetime import datetime, timedelta, timezone
-import hashlib, secrets, re, os
+import hashlib, secrets, re, os, json, urllib.parse, urllib.request
 from typing import Optional, List
 from fastapi import FastAPI, Depends, HTTPException, Header, Cookie, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -141,6 +141,39 @@ def logout(response:Response,authorization:Optional[str]=Header(None),skillbridg
     response.delete_cookie("skillbridge_session",path="/")
     return {"ok":True}
 
+MARKET_CACHE={"at":0,"data":[],"source":"none"}
+MARKET_TTL=300
+
+def _http_json(url,timeout=12):
+    req=urllib.request.Request(url,headers={"User-Agent":"SkillBridge/2.1"})
+    with urllib.request.urlopen(req,timeout=timeout) as r: return json.loads(r.read().decode("utf-8"))
+
+@app.get("/api/market/jobs")
+def market_jobs(q:Optional[str]="software engineer",location:Optional[str]="remote",limit:int=20):
+    limit=max(5,min(limit,40)); now=datetime.now(timezone.utc).timestamp()
+    if now-MARKET_CACHE["at"]<MARKET_TTL and MARKET_CACHE["data"]: return {"jobs":MARKET_CACHE["data"],"source":MARKET_CACHE["source"],"fetched_at":datetime.fromtimestamp(MARKET_CACHE["at"],timezone.utc).isoformat(),"live":True}
+    jobs=[]; source="none"
+    app_id=os.getenv("ADZUNA_APP_ID","").strip(); app_key=os.getenv("ADZUNA_APP_KEY","").strip()
+    if app_id and app_key:
+        try:
+            country=os.getenv("ADZUNA_COUNTRY","in").strip().lower(); params=urllib.parse.urlencode({"app_id":app_id,"app_key":app_key,"results_per_page":limit,"what":q,"where":location})
+            raw=_http_json(f"https://api.adzuna.com/v1/api/jobs/{country}/search/1?{params}")
+            for x in raw.get("results",[]): jobs.append({"id":"adzuna-"+str(x.get("id")),"title":x.get("title",""),"company":(x.get("company") or {}).get("display_name","Unknown"),"location":(x.get("location") or {}).get("display_name",location),"description":x.get("description",""),"url":x.get("redirect_url",""),"created":x.get("created"),"source":"Adzuna"})
+            source="Adzuna"
+        except Exception as e: print(f"Adzuna feed unavailable: {e}")
+    if not jobs:
+        try:
+            raw=_http_json("https://www.arbeitnow.com/api/job-board-api"); rows=raw.get("data",[])
+            words=[w.lower() for w in re.findall(r"[a-z0-9+#.]+",q or "") if len(w)>2]
+            for x in rows:
+                hay=(x.get("title","")+" "+x.get("description","")).lower()
+                if words and not any(w in hay for w in words): continue
+                jobs.append({"id":"arbeitnow-"+str(x.get("slug") or len(jobs)),"title":x.get("title",""),"company":x.get("company_name","Unknown"),"location":x.get("location") or "Remote","description":x.get("description",""),"url":x.get("url",""),"created":x.get("created_at"),"source":"Arbeitnow"})
+                if len(jobs)>=limit: break
+            source="Arbeitnow"
+        except Exception as e: print(f"Public market feed unavailable: {e}")
+    MARKET_CACHE.update({"at":now,"data":jobs,"source":source})
+    return {"jobs":jobs,"source":source,"fetched_at":datetime.fromtimestamp(now,timezone.utc).isoformat(),"live":bool(jobs),"cache_seconds":MARKET_TTL}
 @app.get("/api/opportunities")
 def opportunities(kind:Optional[str]=None,s:Session=Depends(db)):
     q=select(Opportunity).where(Opportunity.status!="Closed")
