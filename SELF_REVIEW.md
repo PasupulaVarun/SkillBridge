@@ -1,24 +1,23 @@
 # SkillBridge Release Review
 
-## v6 Student Portal
-Status: PASS — assessment, profile, recommendations, applications, learning, portfolio and collaboration persist through the backend.
+## v11 Persistence + security
+- User records persist in PostgreSQL through SQLAlchemy.
+- Passwords are stored as salted PBKDF2-HMAC-SHA256 hashes; plaintext passwords are never stored.
+- Sessions are server-side and delivered through an HttpOnly, Secure, SameSite=None cookie.
+- Frontend no longer stores bearer authentication tokens in localStorage.
+- Password change invalidates existing sessions.
+- CORS is restricted through FRONTEND_ORIGIN rather than wildcard credentials.
 
-## v7 Industry Portal
-Status: PASS — industry-only opportunity creation, candidate discovery, explainable matching and owner-restricted application status updates.
+## v11 Domain completeness
+- Student: assessment, profile, recommendations, applications, learning, portfolio, collaboration.
+- Industry: opportunity publishing, candidate discovery, application pipeline and collaboration.
+- Academician: research, training, mentorship and industry collaboration surfaces.
+- Institution: skill-supply/demand analytics and reporting.
+- Shared account area: authenticated identity, role and organization context.
 
-## v8 Academician Portal
-Status: PASS — faculty opportunities, research, training, mentorship and collaboration surfaces.
-
-## v9 Institution Portal
-Status: PASS — institution-only analytics aggregates students, profiles, opportunities, applications and selections.
-
-## v10 Final Integration
-Status: PASS — authentication, role guards, frontend/backend integration, PostgreSQL-compatible SQLAlchemy, Docker path, duplicate protection, syntax checks and clean SQLite workflow.
-
-## Production hardening
-- Secure cookie/session architecture
-- Alembic migrations
-- Document/object storage
-- Email verification/password reset
-- Rate limiting/audit logs
-- pgvector-backed embedding persistence
+## Remaining production backlog
+- Alembic migrations for schema evolution.
+- Email verification and password reset.
+- Rate limiting and audit logging.
+- Object/document storage.
+- pgvector-backed embedding persistence and semantic retrieval.
