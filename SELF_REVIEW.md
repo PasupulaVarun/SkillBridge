@@ -21,3 +21,21 @@
 - Rate limiting and audit logging.
 - Object/document storage.
 - pgvector-backed embedding persistence and semantic retrieval.
+
+## v13 Live Market + UX release
+- Added dedicated Student Live Market navigation.
+- Added external job-feed endpoint with five-minute cache.
+- Added Adzuna integration path via environment credentials, with public-feed fallback.
+- External listings are visibly labelled by source and timestamp.
+- Added skill-aware market queries based on the student's profile.
+- Added credentialed cross-origin API requests for HttpOnly session authentication.
+- Added responsive live-market presentation.
+- Kept external market listings separate from internal SkillBridge opportunities.
+- Frontend deployment triggered from commit 0b7955094c2eba996f250450527c659c4e4f99ce.
+
+### Next production upgrades
+- Configure an India-focused/licensed market-data provider.
+- Add server-side pagination/filtering and saved searches.
+- Add WebSocket/SSE notifications for application status and new matches.
+- Add email verification/password reset and rate limiting.
+- Replace heuristic matching with persisted pgvector embeddings.
