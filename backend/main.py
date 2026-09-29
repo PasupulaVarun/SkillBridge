@@ -1,11 +1,16 @@
 from datetime import datetime, timedelta, timezone
-import hashlib, secrets, re, os, json, urllib.parse, urllib.request
+import hashlib, secrets, re, os, json, urllib.parse, urllib.request, asyncio
+from fastapi.responses import StreamingResponse
 from typing import Optional, List
 from fastapi import FastAPI, Depends, HTTPException, Header, Cookie, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, EmailStr
-from sqlalchemy import create_engine, String, Integer, Float, Text, select, func
+from sqlalchemy import create_engine, String, Integer, Float, Text, select, func, text as sql_text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, Session, sessionmaker
+try:
+    from pgvector.sqlalchemy import Vector
+except Exception:
+    Vector = None
 
 RAW_DATABASE_URL=os.getenv("DATABASE_URL","").strip()
 # Render should inject a real postgres:// or postgresql:// URL. If an old/manual
@@ -41,6 +46,34 @@ class PortfolioItem(Base):
     __tablename__="portfolio_items"; id:Mapped[int]=mapped_column(Integer,primary_key=True); user_id:Mapped[int]=mapped_column(Integer); title:Mapped[str]=mapped_column(String(200)); kind:Mapped[str]=mapped_column(String(60)); description:Mapped[str]=mapped_column(Text,default=""); skills:Mapped[str]=mapped_column(Text,default=""); verified:Mapped[bool]=mapped_column(default=False)
 class Collaboration(Base):
     __tablename__="collaborations"; id:Mapped[int]=mapped_column(Integer,primary_key=True); title:Mapped[str]=mapped_column(String(200)); kind:Mapped[str]=mapped_column(String(60)); provider:Mapped[str]=mapped_column(String(200)); description:Mapped[str]=mapped_column(Text,default=""); target_role:Mapped[str]=mapped_column(String(40),default="All"); status:Mapped[str]=mapped_column(String(40),default="Open")
+PGVECTOR_ENABLED=False
+try:
+    if DATABASE_URL.startswith(("postgres://","postgresql://")):
+        with engine.begin() as _conn:
+            _conn.execute(sql_text("CREATE EXTENSION IF NOT EXISTS vector"))
+        PGVECTOR_ENABLED = Vector is not None
+except Exception as _vector_error:
+    print(f"pgvector unavailable: {_vector_error}")
+
+class Notification(Base):
+    __tablename__="notifications"
+    id:Mapped[int]=mapped_column(Integer,primary_key=True)
+    user_id:Mapped[int]=mapped_column(Integer,index=True)
+    type:Mapped[str]=mapped_column(String(40),default="system")
+    title:Mapped[str]=mapped_column(String(200))
+    message:Mapped[str]=mapped_column(Text,default="")
+    created_at:Mapped[str]=mapped_column(String(50),default=lambda:datetime.now(timezone.utc).isoformat(),index=True)
+    is_read:Mapped[bool]=mapped_column(default=False,index=True)
+
+if PGVECTOR_ENABLED:
+    class SemanticDocument(Base):
+        __tablename__="semantic_documents"
+        id:Mapped[int]=mapped_column(Integer,primary_key=True)
+        entity_type:Mapped[str]=mapped_column(String(40),index=True)
+        entity_id:Mapped[str]=mapped_column(String(80),index=True)
+        content:Mapped[str]=mapped_column(Text)
+        embedding:Mapped[list]=mapped_column(Vector(1536))
+        updated_at:Mapped[str]=mapped_column(String(50),default=lambda:datetime.now(timezone.utc).isoformat())
 Base.metadata.create_all(engine)
 
 app=FastAPI(title="SkillBridge API",version="2.0.0")
@@ -195,13 +228,15 @@ def opportunities(q:Optional[str]="",location:Optional[str]="",kind:Optional[str
 def opportunities_all(s:Session=Depends(db)):
     return [op(x) for x in s.scalars(select(Opportunity).where(Opportunity.status!="Closed").order_by(Opportunity.id.desc())).all()]
 
-def opportunities(kind:Optional[str]=None,s:Session=Depends(db)):
-    q=select(Opportunity).where(Opportunity.status!="Closed")
-    if kind: q=q.where(Opportunity.type==kind)
-    return [op(x) for x in s.scalars(q.order_by(Opportunity.id.desc())).all()]
 @app.post("/api/opportunities",status_code=201)
 def create_opportunity(x:OpportunityIn,u:User=Depends(role("Industry")),s:Session=Depends(db)):
-    o=Opportunity(title=x.title,type=x.type,provider=x.provider or u.organization or u.name,location=x.location,skills=", ".join(x.skills),description=x.description,owner_id=u.id); s.add(o); s.commit(); s.refresh(o); return op(o)
+    o=Opportunity(title=x.title,type=x.type,provider=x.provider or u.organization or u.name,location=x.location,skills=", ".join(x.skills),description=x.description,owner_id=u.id)
+    s.add(o); s.commit(); s.refresh(o)
+    _index_opportunity(o,s)
+    for student in s.scalars(select(User).where(User.role=="Student")).all():
+        s.add(Notification(user_id=student.id,type="opportunity",title="New opportunity",message=o.title))
+    s.commit()
+    return op(o)
 @app.patch("/api/opportunities/{oid}/close")
 def close_opportunity(oid:int,u:User=Depends(role("Industry")),s:Session=Depends(db)):
     o=s.get(Opportunity,oid)
@@ -227,7 +262,12 @@ def apply(x:ApplicationIn,u:User=Depends(role("Student")),s:Session=Depends(db))
     o=s.get(Opportunity,x.opportunity_id)
     if not o or o.status=="Closed": raise HTTPException(404,"Opportunity not available")
     if s.scalar(select(Application).where(Application.student_id==u.id,Application.opportunity_id==o.id)): raise HTTPException(409,"Already applied")
-    a=Application(student_id=u.id,opportunity_id=o.id);s.add(a);s.commit();s.refresh(a);return {"id":a.id,"status":a.status,"opportunity":op(o)}
+    a=Application(student_id=u.id,opportunity_id=o.id);s.add(a);s.commit();s.refresh(a)
+    s.add(Notification(user_id=u.id,type="application",title="Application submitted",message=f"Your application for {o.title} was submitted."))
+    if o.owner_id:
+        s.add(Notification(user_id=o.owner_id,type="application",title="New application",message=f"{u.name} applied for {o.title}."))
+    s.commit()
+    return {"id":a.id,"status":a.status,"opportunity":op(o)}
 @app.get("/api/applications/me")
 def applications_me(u:User=Depends(role("Student")),s:Session=Depends(db)):
     rows=s.scalars(select(Application).where(Application.student_id==u.id).order_by(Application.id.desc())).all()
@@ -237,7 +277,10 @@ def application_status(aid:int,status:str,u:User=Depends(role("Industry")),s:Ses
     a=s.get(Application,aid);o=s.get(Opportunity,a.opportunity_id) if a else None
     if not a or not o or o.owner_id!=u.id: raise HTTPException(404,"Application not found")
     if status not in {"Under Review","Shortlisted","Interview","Selected","Rejected"}: raise HTTPException(400,"Invalid status")
-    a.status=status;s.commit();return {"id":a.id,"status":a.status}
+    a.status=status
+    s.add(Notification(user_id=a.student_id,type="application",title="Application updated",message=f"{o.title}: {status}"))
+    s.commit()
+    return {"id":a.id,"status":a.status}
 
 @app.get("/api/candidates/{oid}")
 def candidates(oid:int,u:User=Depends(role("Industry")),s:Session=Depends(db)):
@@ -319,6 +362,108 @@ def analytics(u:User=Depends(role("Institution")),s:Session=Depends(db)):
     return {"students":students,"profiles":profiles,"profile_completion":round(profiles/students*100) if students else 0,"open_opportunities":opportunities,"applications":apps,"selected":selected,"top_student_skills":sorted(supply.items(),key=lambda x:x[1],reverse=True)[:8],"industry_demand":sorted(demand.items(),key=lambda x:x[1],reverse=True)[:8]}
 @app.get("/api/institution/reports")
 def reports(u:User=Depends(role("Institution")),s:Session=Depends(db)): return {"generated_at":datetime.now(timezone.utc).isoformat(),"metrics":analytics(u,s)}
+
+
+OPENAI_API_KEY=os.getenv("OPENAI_API_KEY","").strip()
+EMBEDDING_MODEL=os.getenv("EMBEDDING_MODEL","text-embedding-3-small").strip()
+
+def _embedding_text(title,description="",skills=None,location=""):
+    return " | ".join([title or "", description or "", ", ".join(skills or []), location or ""]).strip()
+
+def _create_embedding(text_value):
+    if not (PGVECTOR_ENABLED and OPENAI_API_KEY):
+        return None
+    body=json.dumps({"model":EMBEDDING_MODEL,"input":text_value}).encode()
+    req=urllib.request.Request(
+        "https://api.openai.com/v1/embeddings",
+        data=body,
+        headers={"Authorization":f"Bearer {OPENAI_API_KEY}","Content-Type":"application/json"},
+        method="POST")
+    try:
+        with urllib.request.urlopen(req,timeout=20) as r:
+            data=json.loads(r.read().decode("utf-8"))
+        return data["data"][0]["embedding"]
+    except Exception as e:
+        print(f"Embedding provider unavailable: {e}")
+        return None
+
+def _index_opportunity(o,s):
+    if not PGVECTOR_ENABLED: return False
+    emb=_create_embedding(_embedding_text(o.title,o.description,parts(o.skills),o.location))
+    if not emb: return False
+    doc=s.scalar(select(SemanticDocument).where(
+        SemanticDocument.entity_type=="opportunity",
+        SemanticDocument.entity_id==str(o.id)))
+    if not doc:
+        doc=SemanticDocument(entity_type="opportunity",entity_id=str(o.id),content=_embedding_text(o.title,o.description,parts(o.skills),o.location),embedding=emb)
+        s.add(doc)
+    else:
+        doc.content=_embedding_text(o.title,o.description,parts(o.skills),o.location)
+        doc.embedding=emb
+        doc.updated_at=datetime.now(timezone.utc).isoformat()
+    s.commit()
+    return True
+
+@app.get("/api/semantic-search")
+def semantic_search(q:str,limit:int=10,s:Session=Depends(db)):
+    limit=max(1,min(limit,30))
+    if not (PGVECTOR_ENABLED and OPENAI_API_KEY):
+        rows=list(s.scalars(select(Opportunity).where(Opportunity.status!="Closed").order_by(Opportunity.id.desc()).limit(limit)).all())
+        terms={norm(x) for x in re.findall(r"[A-Za-z0-9+#.]+",q)}
+        ranked=[]
+        for o in rows:
+            hay={norm(x) for x in [o.title,o.provider,o.location,*parts(o.skills)]}
+            ranked.append((len(terms & hay),o))
+        return {"enabled":False,"message":"Semantic search is ready but needs OPENAI_API_KEY and pgvector.","items":[op(o) for _,o in sorted(ranked,key=lambda x:x[0],reverse=True)]}
+    emb=_create_embedding(q)
+    if not emb:
+        raise HTTPException(503,"Embedding provider unavailable")
+    rows=s.scalars(
+        select(SemanticDocument)
+        .where(SemanticDocument.entity_type=="opportunity")
+        .order_by(SemanticDocument.embedding.cosine_distance(emb))
+        .limit(limit)
+    ).all()
+    out=[]
+    for d in rows:
+        o=s.get(Opportunity,int(d.entity_id))
+        if o and o.status!="Closed":
+            similarity=max(0.0,1.0-float(d.embedding.cosine_distance(emb)))
+            out.append({**op(o),"semantic_similarity":round(similarity*100,1)})
+    return {"enabled":True,"items":out}
+
+@app.get("/api/notifications")
+def notification_list(u:User=Depends(current),s:Session=Depends(db)):
+    rows=s.scalars(select(Notification).where(Notification.user_id==u.id).order_by(Notification.id.desc()).limit(50)).all()
+    return [{"id":n.id,"type":n.type,"title":n.title,"message":n.message,"date":n.created_at,"is_read":n.is_read} for n in rows]
+
+@app.patch("/api/notifications/{nid}/read")
+def notification_read(nid:int,u:User=Depends(current),s:Session=Depends(db)):
+    n=s.get(Notification,nid)
+    if not n or n.user_id!=u.id: raise HTTPException(404,"Notification not found")
+    n.is_read=True; s.commit()
+    return {"ok":True,"id":n.id,"is_read":True}
+
+@app.patch("/api/notifications/read-all")
+def notification_read_all(u:User=Depends(current),s:Session=Depends(db)):
+    s.query(Notification).filter(Notification.user_id==u.id,Notification.is_read==False).update({Notification.is_read:True},synchronize_session=False)
+    s.commit()
+    return {"ok":True}
+
+@app.get("/api/notifications/stream")
+async def notification_stream(u:User=Depends(current)):
+    async def events():
+        last_id=0
+        for _ in range(20):
+            with SessionLocal() as s:
+                rows=s.scalars(select(Notification).where(Notification.user_id==u.id,Notification.id>last_id).order_by(Notification.id.asc()).limit(20)).all()
+                for n in rows:
+                    last_id=max(last_id,n.id)
+                    payload=json.dumps({"id":n.id,"type":n.type,"title":n.title,"message":n.message,"date":n.created_at,"is_read":n.is_read})
+                    yield f"id: {n.id}\nevent: notification\ndata: {payload}\n\n"
+            yield ": keep-alive\n\n"
+            await asyncio.sleep(3)
+    return StreamingResponse(events(),media_type="text/event-stream",headers={"Cache-Control":"no-cache","Connection":"keep-alive","X-Accel-Buffering":"no"})
 
 @app.post("/api/seed")
 def seed(s:Session=Depends(db)):
