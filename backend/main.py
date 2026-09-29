@@ -195,16 +195,8 @@ def market_jobs(q:Optional[str]="software engineer",location:Optional[str]="remo
             source="Adzuna"
         except Exception as e: print(f"Adzuna feed unavailable: {e}")
     if not jobs:
-        try:
-            raw=_http_json("https://www.arbeitnow.com/api/job-board-api"); rows=raw.get("data",[])
-            words=[w.lower() for w in re.findall(r"[a-z0-9+#.]+",q or "") if len(w)>2]
-            for x in rows:
-                hay=(x.get("title","")+" "+x.get("description","")).lower()
-                if words and not any(w in hay for w in words): continue
-                jobs.append({"id":"arbeitnow-"+str(x.get("slug") or len(jobs)),"title":x.get("title",""),"company":x.get("company_name","Unknown"),"location":x.get("location") or "Remote","description":x.get("description",""),"url":x.get("url",""),"created":x.get("created_at"),"source":"Arbeitnow"})
-                if len(jobs)>=limit: break
-            source="Arbeitnow"
-        except Exception as e: print(f"Public market feed unavailable: {e}")
+        source="unconfigured"
+
     MARKET_CACHE.update({"at":now,"data":jobs,"source":source})
     return {"jobs":jobs,"source":source,"fetched_at":datetime.fromtimestamp(now,timezone.utc).isoformat(),"live":bool(jobs),"cache_seconds":MARKET_TTL}
 
@@ -340,17 +332,6 @@ def skill_gaps(u:User=Depends(role("Student")),s:Session=Depends(db)):
         if matched: learning.append({"id":item.id,"title":item.title,"provider":item.provider,"skills":parts(item.skills),"target_gaps":matched})
     return {"current_skills":sorted(have),"priority_gaps":[{"skill":k,"market_demand":n,"priority":min(100,40+n*15)} for k,n in gaps[:10]],"recommended_learning":learning[:10]}
 
-@app.get("/api/notifications")
-def notifications(u:User=Depends(current),s:Session=Depends(db)):
-    items=[]
-    if u.role=="Student":
-        for a in s.scalars(select(Application).where(Application.student_id==u.id).order_by(Application.id.desc()).limit(10)).all():
-            o=s.get(Opportunity,a.opportunity_id)
-            items.append({"type":"application","title":o.title if o else "Application","message":"Application status: "+a.status,"date":a.created_at})
-        for o in s.scalars(select(Opportunity).where(Opportunity.status!="Closed").order_by(Opportunity.id.desc()).limit(5)).all():
-            items.append({"type":"opportunity","title":"New opportunity","message":o.title,"date":datetime.now(timezone.utc).isoformat()})
-    return sorted(items,key=lambda x:x["date"],reverse=True)[:12]
-
 @app.get("/api/analytics")
 def analytics(u:User=Depends(role("Institution")),s:Session=Depends(db)):
     students=s.scalar(select(func.count(User.id)).where(User.role=="Student")) or 0; profiles=s.scalar(select(func.count(SkillProfile.id))) or 0; opportunities=s.scalar(select(func.count(Opportunity.id)).where(Opportunity.status!="Closed")) or 0; apps=s.scalar(select(func.count(Application.id))) or 0; selected=s.scalar(select(func.count(Application.id)).where(Application.status=="Selected")) or 0
@@ -418,17 +399,13 @@ def semantic_search(q:str,limit:int=10,s:Session=Depends(db)):
     emb=_create_embedding(q)
     if not emb:
         raise HTTPException(503,"Embedding provider unavailable")
-    rows=s.scalars(
-        select(SemanticDocument)
-        .where(SemanticDocument.entity_type=="opportunity")
-        .order_by(SemanticDocument.embedding.cosine_distance(emb))
-        .limit(limit)
-    ).all()
+    distance=SemanticDocument.embedding.cosine_distance(emb)
+    rows=s.execute(select(SemanticDocument, distance.label("distance")).where(SemanticDocument.entity_type=="opportunity").order_by(distance).limit(limit)).all()
     out=[]
-    for d in rows:
+    for d,dist in rows:
         o=s.get(Opportunity,int(d.entity_id))
         if o and o.status!="Closed":
-            similarity=max(0.0,1.0-float(d.embedding.cosine_distance(emb)))
+            similarity=max(0.0,1.0-float(dist))
             out.append({**op(o),"semantic_similarity":round(similarity*100,1)})
     return {"enabled":True,"items":out}
 
