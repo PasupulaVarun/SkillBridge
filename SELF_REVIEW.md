@@ -40,18 +40,19 @@
 - Add email verification/password reset and rate limiting.
 - Replace heuristic matching with persisted pgvector embeddings.
 
-## v14 SkillBridge 2.0 completion
-- Marketplace now supports live search, type filtering, skill filtering and pagination-ready API responses.
-- Student Skill Gap Intelligence compares profile skills with current SkillBridge opportunity demand.
-- Learning recommendations can be tied directly to identified market gaps.
-- Notifications API exposes application updates and new opportunity signals.
-- Institution analytics already exposes student-skill supply versus opportunity demand.
-- External market data remains explicitly separated from internal SkillBridge opportunity data.
+## v15 Production engineering layers
+- pgvector dependency added and the API creates the PostgreSQL vector extension when the database permits it.
+- Opportunity semantic documents persist embeddings using a 1536-dimension vector and expose `/api/semantic-search` with lexical fallback when embeddings are not configured.
+- Notification records persist in PostgreSQL with unread/read state and read-all support.
+- Application submissions/status changes and new opportunities create durable notification records.
+- `/api/notifications/stream` provides authenticated Server-Sent Events for live notification delivery.
+- Frontend opens the SSE stream with credentials, reconnects after transient failures, and exposes a persistent Notifications page.
+- Live employment-market integration is now explicitly India-scoped through `ADZUNA_COUNTRY=in`; public non-India fallback was removed. Adzuna credentials remain required for external market listings.
+- Existing internal SkillBridge opportunities remain separate from external market listings.
+- Duplicate `/api/opportunities` route was removed during self-review.
 
-### Still required for a true production marketplace
-- Licensed India-focused market data provider and explicit provider terms.
-- Persistent user notification/read-state model.
-- WebSocket/SSE event infrastructure.
-- pgvector extension + persisted embeddings + background embedding jobs.
-- Database migrations instead of create-all schema evolution.
-- Rate limiting, email verification, password reset and audit logs.
+### Deployment/configuration notes
+- `ADZUNA_APP_ID` and `ADZUNA_APP_KEY` must be supplied in Render for licensed external job data to appear.
+- `OPENAI_API_KEY` must be supplied in Render to generate semantic embeddings; without it, the system stays operational and uses lexical matching.
+- The Render Postgres account must permit the `vector` extension; the API logs a clear capability message if it cannot enable it.
+- Alembic migrations, rate limiting, email verification/password reset, audit logging, and background embedding workers remain separate hardening work for a later production phase.
