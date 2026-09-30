@@ -154,7 +154,10 @@ class PasswordChange(BaseModel):
     new_password:str=Field(min_length=8)
 class CollaborationIn(BaseModel): title:str; kind:str="Workshop"; provider:str=""; description:str=""; target_role:str="Student"
 
-def op(o): return {"id":o.id,"title":o.title,"type":o.type,"provider":o.provider,"location":o.location,"skills":parts(o.skills),"description":o.description,"status":o.status,"owner_id":o.owner_id}
+def op(o):
+    category="skillbridge_industry" if o.owner_id else "demo"
+    if "Demo marketplace listing" in (o.description or ""): category="demo"
+    return {"id":o.id,"title":o.title,"type":o.type,"provider":o.provider,"location":o.location,"skills":parts(o.skills),"description":o.description,"status":o.status,"owner_id":o.owner_id,"source_category":category,"live":False}
 def prof(p): return {"technical_score":p.technical_score,"soft_score":p.soft_score,"strengths":parts(p.strengths),"gaps":parts(p.gaps),"skills":parts(p.skills),"interests":parts(p.interests)}
 
 @app.get("/api/health")
@@ -308,6 +311,9 @@ def save_profile(x:ProfileIn,u:User=Depends(role("Student")),s:Session=Depends(d
 def recommendations(u:User=Depends(role("Student")),s:Session=Depends(db)):
     p=s.scalar(select(SkillProfile).where(SkillProfile.owner_id==u.id)); profile=prof(p) if p else {"skills":[],"technical_score":0,"soft_score":0}
     out=[{**op(o),**score(profile,parts(o.skills))} for o in s.scalars(select(Opportunity).where(Opportunity.status!="Closed")).all()]
+    for j in s.scalars(select(MarketJob).order_by(MarketJob.fetched_at.desc()).limit(100)).all():
+        req=parts(j.skills) or _infer_skills(j.title+" "+j.description)
+        out.append({"id":"market-"+str(j.id),"title":j.title,"type":"External Job","provider":j.company,"location":j.location,"skills":req,"description":j.description,"status":"Live","owner_id":None,"source_category":"live_external","live":True,"url":j.url,"source":j.source,**score(profile,req)})
     return sorted(out,key=lambda x:(x["match"],x["skill_coverage"]),reverse=True)
 
 @app.post("/api/applications",status_code=201)
