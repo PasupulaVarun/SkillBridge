@@ -192,31 +192,62 @@ def logout(response:Response,authorization:Optional[str]=Header(None),skillbridg
     response.delete_cookie("skillbridge_session",path="/")
     return {"ok":True}
 
-MARKET_CACHE={"at":0,"data":[],"source":"none"}
 MARKET_TTL=300
 
-def _http_json(url,timeout=12):
-    req=urllib.request.Request(url,headers={"User-Agent":"SkillBridge/2.1"})
+def _http_json(url,timeout=15):
+    req=urllib.request.Request(url,headers={"User-Agent":"SkillBridge/2.2"})
     with urllib.request.urlopen(req,timeout=timeout) as r: return json.loads(r.read().decode("utf-8"))
 
-@app.get("/api/market/jobs")
-def market_jobs(q:Optional[str]="software engineer",location:Optional[str]="remote",limit:int=20):
-    limit=max(5,min(limit,40)); now=datetime.now(timezone.utc).timestamp()
-    if now-MARKET_CACHE["at"]<MARKET_TTL and MARKET_CACHE["data"]: return {"jobs":MARKET_CACHE["data"],"source":MARKET_CACHE["source"],"fetched_at":datetime.fromtimestamp(MARKET_CACHE["at"],timezone.utc).isoformat(),"live":True}
-    jobs=[]; source="none"
-    app_id=os.getenv("ADZUNA_APP_ID","").strip(); app_key=os.getenv("ADZUNA_APP_KEY","").strip()
-    if app_id and app_key:
-        try:
-            country=os.getenv("ADZUNA_COUNTRY","in").strip().lower(); params=urllib.parse.urlencode({"app_id":app_id,"app_key":app_key,"results_per_page":limit,"what":q,"where":location})
-            raw=_http_json(f"https://api.adzuna.com/v1/api/jobs/{country}/search/1?{params}")
-            for x in raw.get("results",[]): jobs.append({"id":"adzuna-"+str(x.get("id")),"title":x.get("title",""),"company":(x.get("company") or {}).get("display_name","Unknown"),"location":(x.get("location") or {}).get("display_name",location),"description":x.get("description",""),"url":x.get("redirect_url",""),"created":x.get("created"),"source":"Adzuna"})
-            source="Adzuna"
-        except Exception as e: print(f"Adzuna feed unavailable: {e}")
-    if not jobs:
-        source="unconfigured"
+def _dedupe_key(title,company,location):
+    raw="|".join(norm(x) for x in [title,company,location])
+    return hashlib.sha256(raw.encode()).hexdigest()[:64]
 
-    MARKET_CACHE.update({"at":now,"data":jobs,"source":source})
-    return {"jobs":jobs,"source":source,"fetched_at":datetime.fromtimestamp(now,timezone.utc).isoformat(),"live":bool(jobs),"cache_seconds":MARKET_TTL}
+def _infer_skills(text):
+    catalog=["Python","Java","C++","C","JavaScript","TypeScript","React","Next.js","HTML","CSS","Node.js","FastAPI","Django","Flask","PostgreSQL","SQL","MongoDB","Git","Docker","AWS","Azure","Linux","Kubernetes","Pandas","NumPy","Scikit-learn","Machine Learning","Deep Learning","Data Science","TensorFlow","PyTorch","NLP","Computer Vision","Cybersecurity","Networking","Excel","Power BI","Communication","Problem Solving"]
+    hay=(text or "").lower()
+    return [x for x in catalog if x.lower() in hay]
+
+def _fetch_adzuna(q,location,limit):
+    app_id=os.getenv("ADZUNA_APP_ID","").strip(); app_key=os.getenv("ADZUNA_APP_KEY","").strip()
+    if not (app_id and app_key): return []
+    country=os.getenv("ADZUNA_COUNTRY","in").strip().lower()
+    params=urllib.parse.urlencode({"app_id":app_id,"app_key":app_key,"results_per_page":limit,"what":q,"where":location})
+    raw=_http_json(f"https://api.adzuna.com/v1/api/jobs/{country}/search/1?{params}")
+    return [{"external_id":"adzuna-"+str(x.get("id")),"source":"Adzuna","title":x.get("title",""),"company":(x.get("company") or {}).get("display_name","Unknown"),"location":(x.get("location") or {}).get("display_name",location),"description":x.get("description",""),"url":x.get("redirect_url",""),"created_external":x.get("created","")} for x in raw.get("results",[])]
+
+def ingest_market_jobs(q="software engineer",location="India",limit=40,s=None):
+    own_session=s is None
+    s=s or SessionLocal()
+    fetched=datetime.now(timezone.utc).isoformat()
+    try:
+        raw_jobs=_fetch_adzuna(q,location,limit)
+        for x in raw_jobs:
+            row=s.scalar(select(MarketJob).where(MarketJob.external_id==x["external_id"])) or MarketJob(external_id=x["external_id"])
+            row.source=x["source"];row.title=x["title"];row.company=x["company"];row.location=x["location"];row.description=x["description"];row.url=x["url"];row.created_external=x["created_external"];row.fetched_at=fetched;row.skills=", ".join(_infer_skills(" ".join([x["title"],x["description"]]))) ;row.dedupe_key=_dedupe_key(x["title"],x["company"],x["location"])
+            s.add(row)
+        s.commit()
+        return len(raw_jobs)
+    finally:
+        if own_session: s.close()
+
+@app.post("/api/market/sync")
+def market_sync(x:dict=None,s:Session=Depends(db)):
+    secret=os.getenv("MARKET_SYNC_SECRET","").strip()
+    if secret and (x or {}).get("secret")!=secret: raise HTTPException(401,"Invalid market sync secret")
+    n=ingest_market_jobs(s=s)
+    return {"ok":True,"ingested":n,"source":"Adzuna" if n else "unconfigured","fetched_at":datetime.now(timezone.utc).isoformat()}
+
+@app.get("/api/market/jobs")
+def market_jobs(q:Optional[str]="software engineer",location:Optional[str]="India",limit:int=20,s:Session=Depends(db)):
+    limit=max(5,min(limit,40))
+    rows=list(s.scalars(select(MarketJob).order_by(MarketJob.fetched_at.desc()).limit(500)).all())
+    terms=[norm(x) for x in re.findall(r"[A-Za-z0-9+#.]+",q or "") if x.strip()]
+    if terms:
+        rows=[r for r in rows if any(t in norm(" ".join([r.title,r.company,r.description,r.skills])) for t in terms)]
+    if location:
+        rows=[r for r in rows if location.lower() in r.location.lower() or "remote" in r.location.lower()]
+    jobs=[{"id":"market-"+str(r.id),"title":r.title,"company":r.company,"location":r.location,"description":r.description,"url":r.url,"created":r.created_external,"source":r.source,"skills":parts(r.skills),"source_category":"live_external","live":True,"fetched_at":r.fetched_at} for r in rows[:limit]]
+    return {"jobs":jobs,"source":jobs[0]["source"] if jobs else "unconfigured","fetched_at":max((r.fetched_at for r in rows),default=None),"live":bool(jobs),"stored_count":len(rows)}
 
 @app.get("/api/opportunities")
 def opportunities(q:Optional[str]="",location:Optional[str]="",kind:Optional[str]="",skills:Optional[str]="",remote:Optional[bool]=None,page:int=1,limit:int=20,s:Session=Depends(db)):
