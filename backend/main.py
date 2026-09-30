@@ -34,6 +34,21 @@ class SessionToken(Base):
     __tablename__="session_tokens"; id:Mapped[int]=mapped_column(Integer,primary_key=True); token:Mapped[str]=mapped_column(String(160),unique=True,index=True); user_id:Mapped[int]=mapped_column(Integer); expires_at:Mapped[str]=mapped_column(String(50))
 class Opportunity(Base):
     __tablename__="opportunities"; id:Mapped[int]=mapped_column(Integer,primary_key=True); title:Mapped[str]=mapped_column(String(200)); type:Mapped[str]=mapped_column(String(60)); provider:Mapped[str]=mapped_column(String(200)); location:Mapped[str]=mapped_column(String(120)); skills:Mapped[str]=mapped_column(Text,default=""); description:Mapped[str]=mapped_column(Text,default=""); status:Mapped[str]=mapped_column(String(40),default="Published"); owner_id:Mapped[int]=mapped_column(Integer,default=0)
+class MarketJob(Base):
+    __tablename__="market_jobs"
+    id:Mapped[int]=mapped_column(Integer,primary_key=True)
+    external_id:Mapped[str]=mapped_column(String(180),unique=True,index=True)
+    source:Mapped[str]=mapped_column(String(80),index=True)
+    title:Mapped[str]=mapped_column(String(240))
+    company:Mapped[str]=mapped_column(String(200),default="")
+    location:Mapped[str]=mapped_column(String(160),default="")
+    description:Mapped[str]=mapped_column(Text,default="")
+    url:Mapped[str]=mapped_column(Text,default="")
+    created_external:Mapped[str]=mapped_column(String(80),default="")
+    fetched_at:Mapped[str]=mapped_column(String(50))
+    skills:Mapped[str]=mapped_column(Text,default="")
+    dedupe_key:Mapped[str]=mapped_column(String(180),index=True)
+
 class Application(Base):
     __tablename__="applications"; id:Mapped[int]=mapped_column(Integer,primary_key=True); student_id:Mapped[int]=mapped_column(Integer); opportunity_id:Mapped[int]=mapped_column(Integer); status:Mapped[str]=mapped_column(String(40),default="Submitted"); created_at:Mapped[str]=mapped_column(String(50),default=lambda:datetime.now(timezone.utc).isoformat())
 class SkillProfile(Base):
