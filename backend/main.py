@@ -81,7 +81,7 @@ FRONTEND_ORIGIN=os.getenv("FRONTEND_ORIGIN","").strip()
 ALLOWED_ORIGINS=[x.strip() for x in FRONTEND_ORIGIN.split(",") if x.strip()] or ["http://localhost:5500","http://127.0.0.1:5500"]
 # Production frontend may run on Render or Vercel. Keep explicit configured
 # origins preferred, while allowing the platform preview/production hosts.
-ALLOWED_ORIGIN_REGEX=r"^https://([a-z0-9-]+\\.)*(onrender\\.com|vercel\\.app)$"
+ALLOWED_ORIGIN_REGEX=r"^https://([a-z0-9-]+\.)*(onrender\.com|vercel\.app)$"
 app.add_middleware(CORSMiddleware,allow_origins=ALLOWED_ORIGINS,allow_origin_regex=ALLOWED_ORIGIN_REGEX,allow_credentials=True,allow_methods=["*"],allow_headers=["*"])
 ROLES={"Student","Academician","Industry","Institution"}
 
