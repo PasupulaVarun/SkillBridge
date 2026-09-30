@@ -79,7 +79,10 @@ Base.metadata.create_all(engine)
 app=FastAPI(title="SkillBridge API",version="2.0.0")
 FRONTEND_ORIGIN=os.getenv("FRONTEND_ORIGIN","").strip()
 ALLOWED_ORIGINS=[x.strip() for x in FRONTEND_ORIGIN.split(",") if x.strip()] or ["http://localhost:5500","http://127.0.0.1:5500"]
-app.add_middleware(CORSMiddleware,allow_origins=ALLOWED_ORIGINS,allow_credentials=True,allow_methods=["*"],allow_headers=["*"])
+# Production frontend may run on Render or Vercel. Keep explicit configured
+# origins preferred, while allowing the platform preview/production hosts.
+ALLOWED_ORIGIN_REGEX=r"^https://([a-z0-9-]+\\.)*(onrender\\.com|vercel\\.app)$"
+app.add_middleware(CORSMiddleware,allow_origins=ALLOWED_ORIGINS,allow_origin_regex=ALLOWED_ORIGIN_REGEX,allow_credentials=True,allow_methods=["*"],allow_headers=["*"])
 ROLES={"Student","Academician","Industry","Institution"}
 
 def db():
@@ -136,7 +139,7 @@ class PasswordChange(BaseModel):
     new_password:str=Field(min_length=8)
 class CollaborationIn(BaseModel): title:str; kind:str="Workshop"; provider:str=""; description:str=""; target_role:str="Student"
 
-def op(o): return {"id":o.id,"title":o.title,"type":o.type,"provider":o.provider,"location":o.location,"skills":parts(o.skills),"description":o.description,"status":o.status}
+def op(o): return {"id":o.id,"title":o.title,"type":o.type,"provider":o.provider,"location":o.location,"skills":parts(o.skills),"description":o.description,"status":o.status,"owner_id":o.owner_id}
 def prof(p): return {"technical_score":p.technical_score,"soft_score":p.soft_score,"strengths":parts(p.strengths),"gaps":parts(p.gaps),"skills":parts(p.skills),"interests":parts(p.interests)}
 
 @app.get("/api/health")
@@ -215,6 +218,18 @@ def opportunities(q:Optional[str]="",location:Optional[str]="",kind:Optional[str
         out.append(op(o))
     start=(page-1)*limit
     return {"items":out[start:start+limit],"total":len(out),"page":page,"limit":limit,"pages":(len(out)+limit-1)//limit if out else 0}
+
+@app.get("/api/opportunities/{oid}/applications")
+def opportunity_applications(oid:int,u:User=Depends(role("Industry")),s:Session=Depends(db)):
+    o=s.get(Opportunity,oid)
+    if not o or o.owner_id!=u.id: raise HTTPException(404,"Opportunity not found")
+    rows=s.scalars(select(Application).where(Application.opportunity_id==oid).order_by(Application.id.desc())).all()
+    out=[]
+    for a in rows:
+        student=s.get(User,a.student_id)
+        profile=s.scalar(select(SkillProfile).where(SkillProfile.owner_id==a.student_id))
+        out.append({"id":a.id,"status":a.status,"created_at":a.created_at,"student":{"id":student.id,"name":student.name,"email":student.email} if student else None,"match":score(prof(profile),parts(o.skills)) if profile else None})
+    return out
 
 @app.get("/api/opportunities/all")
 def opportunities_all(s:Session=Depends(db)):
@@ -447,6 +462,32 @@ def seed(s:Session=Depends(db)):
     if not s.scalar(select(Opportunity)):
         for x in [("Software Engineering Internship","Internship","Tech Partner","Hybrid",["Python","Git","Data Structures"]),("AI/ML Live Project","Project","AI Lab Partner","Remote",["Python","NumPy","Pandas","Machine Learning"]),("Faculty Industry Training","Training","Industry Partner","Online",["Domain Expertise","Communication"]),("Campus Skill Gap Program","Training","Industry Partner","Hybrid",["Programming","Communication"])]:
             s.add(Opportunity(title=x[0],type=x[1],provider=x[2],location=x[3],skills=", ".join(x[4]),description="Industry-aligned opportunity for SkillBridge participants."))
+    # Keep the student marketplace useful on a fresh deployment. These are
+    # clearly labeled demo opportunities until a licensed live jobs feed is configured.
+    existing_op_count=s.scalar(select(func.count(Opportunity.id))) or 0
+    if existing_op_count < 120:
+        tracks=[
+            ("Software Engineer",["Python","Git","Data Structures"]),
+            ("Frontend Developer",["JavaScript","React","HTML","CSS"]),
+            ("Backend Developer",["Python","FastAPI","PostgreSQL"]),
+            ("Data Analyst",["Python","Pandas","SQL","Excel"]),
+            ("Data Science Intern",["Python","NumPy","Pandas","Scikit-learn"]),
+            ("AI/ML Engineer",["Python","Machine Learning","NumPy","Scikit-learn"]),
+            ("Cloud Engineer",["Linux","AWS","Docker","Git"]),
+            ("DevOps Engineer",["Linux","Docker","CI/CD","Git"]),
+            ("Cybersecurity Analyst",["Networking","Linux","Security","Python"]),
+            ("QA Automation Engineer",["Python","Selenium","Testing","Git"]),
+            ("Product Engineering Intern",["Programming","Problem Solving","Git"]),
+            ("Business Analyst",["SQL","Excel","Communication","Problem Solving"])
+        ]
+        locations=["Remote - India","Hyderabad","Bengaluru","Chennai","Pune","Mumbai","Delhi NCR","Visakhapatnam","Vijayawada","Noida"]
+        kinds=["Job","Internship","Apprenticeship","Project"]
+        for i in range(existing_op_count,120):
+            track,skills=tracks[i % len(tracks)]
+            kind=kinds[i % len(kinds)]
+            location=locations[i % len(locations)]
+            title=f"{track} — Industry Opportunity {i+1:03d}"
+            s.add(Opportunity(title=title,type=kind,provider="SkillBridge Industry Network",location=location,skills=", ".join(skills),description="Demo marketplace listing for product testing and student discovery. Configure a licensed market feed for verified external vacancies.",status="Published",owner_id=0))
     if not s.scalar(select(LearningItem)):
         for x in [("Python for Data Analysis","Course",["Python","Pandas","NumPy"]),("Practical Machine Learning","Course",["Machine Learning","Python"]),("Communication for Engineers","Workshop",["Communication"])]:
             s.add(LearningItem(title=x[0],kind=x[1],provider="SkillBridge Academy",skills=", ".join(x[2])))
