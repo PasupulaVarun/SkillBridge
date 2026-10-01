@@ -178,7 +178,7 @@ def login(x:Login,response:Response,s:Session=Depends(db)):
     if not u or not vp(x.password,u.password_hash): raise HTTPException(401,"Invalid email or password")
     exp=datetime.now(timezone.utc)+timedelta(hours=12); token=secrets.token_urlsafe(48); s.add(SessionToken(token=token,user_id=u.id,expires_at=exp.isoformat())); s.commit()
     response.set_cookie("skillbridge_session",token,max_age=12*60*60,httponly=True,secure=True,samesite="none",path="/")
-    return {"expires_at":exp.isoformat(),"user":payload(u)}
+    return {"expires_at":exp.isoformat(),"token":token,"user":payload(u)}
 @app.get("/api/auth/me")
 def me(u:User=Depends(current)): return payload(u)
 
