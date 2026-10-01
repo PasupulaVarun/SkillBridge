@@ -51,6 +51,8 @@ class MarketJob(Base):
 
 class Application(Base):
     __tablename__="applications"; id:Mapped[int]=mapped_column(Integer,primary_key=True); student_id:Mapped[int]=mapped_column(Integer); opportunity_id:Mapped[int]=mapped_column(Integer); status:Mapped[str]=mapped_column(String(40),default="Submitted"); created_at:Mapped[str]=mapped_column(String(50),default=lambda:datetime.now(timezone.utc).isoformat())
+class ExternalApplication(Base):
+    __tablename__="external_applications"; id:Mapped[int]=mapped_column(Integer,primary_key=True); student_id:Mapped[int]=mapped_column(Integer,index=True); market_job_id:Mapped[int]=mapped_column(Integer,index=True); status:Mapped[str]=mapped_column(String(40),default="Tracked"); created_at:Mapped[str]=mapped_column(String(50),default=lambda:datetime.now(timezone.utc).isoformat())
 class SkillProfile(Base):
     __tablename__="skill_profiles"; id:Mapped[int]=mapped_column(Integer,primary_key=True); owner_id:Mapped[int]=mapped_column(Integer,unique=True); technical_score:Mapped[float]=mapped_column(Float,default=0); soft_score:Mapped[float]=mapped_column(Float,default=0); strengths:Mapped[str]=mapped_column(Text,default=""); gaps:Mapped[str]=mapped_column(Text,default=""); skills:Mapped[str]=mapped_column(Text,default=""); interests:Mapped[str]=mapped_column(Text,default="")
 class LearningItem(Base):
@@ -145,7 +147,9 @@ def score(p,required):
 class Register(BaseModel): name:str=Field(min_length=2); email:EmailStr; password:str=Field(min_length=6); role:str="Student"; organization:str=""
 class Login(BaseModel): email:EmailStr; password:str
 class OpportunityIn(BaseModel): title:str; type:str="Internship"; provider:str=""; location:str="Flexible"; skills:List[str]=[]; description:str=""
-class ApplicationIn(BaseModel): opportunity_id:int
+class ApplicationIn(BaseModel):
+    opportunity_id:Optional[int]=None
+    market_job_id:Optional[int]=None
 class ProfileIn(BaseModel): technical_score:float=0; soft_score:float=0; strengths:List[str]=[]; gaps:List[str]=[]; skills:List[str]=[]; interests:List[str]=[]
 class PortfolioIn(BaseModel): title:str; kind:str="Project"; description:str=""; skills:List[str]=[]
 class ProgressIn(BaseModel): progress:int=Field(ge=0,le=100)
@@ -241,16 +245,30 @@ def market_sync(x:dict=None,s:Session=Depends(db)):
     return {"ok":True,"ingested":n,"source":"Adzuna" if n else "unconfigured","fetched_at":datetime.now(timezone.utc).isoformat()}
 
 @app.get("/api/market/jobs")
-def market_jobs(q:Optional[str]="software engineer",location:Optional[str]="India",limit:int=20,s:Session=Depends(db)):
+def market_jobs(q:Optional[str]="",location:Optional[str]="India",limit:int=20,u:User=Depends(role("Student")),s:Session=Depends(db)):
     limit=max(5,min(limit,40))
+    p=s.scalar(select(SkillProfile).where(SkillProfile.owner_id==u.id))
+    profile=prof(p) if p else {"skills":[],"interests":[]}
+    requested=(q or "").strip()
+    skill_query=" ".join(profile.get("skills",[])[:5]).strip()
+    if not requested or requested.lower()=="software engineer": requested=skill_query or "software engineer"
     rows=list(s.scalars(select(MarketJob).order_by(MarketJob.fetched_at.desc()).limit(500)).all())
-    terms=[norm(x) for x in re.findall(r"[A-Za-z0-9+#.]+",q or "") if x.strip()]
-    if terms:
-        rows=[r for r in rows if any(t in norm(" ".join([r.title,r.company,r.description,r.skills])) for t in terms)]
-    if location:
-        rows=[r for r in rows if location.lower() in r.location.lower() or "remote" in r.location.lower()]
-    jobs=[{"id":"market-"+str(r.id),"title":r.title,"company":r.company,"location":r.location,"description":r.description,"url":r.url,"created":r.created_external,"source":r.source,"skills":parts(r.skills),"source_category":"live_external","live":True,"fetched_at":r.fetched_at} for r in rows[:limit]]
-    return {"jobs":jobs,"source":jobs[0]["source"] if jobs else "unconfigured","fetched_at":max((r.fetched_at for r in rows),default=None),"live":bool(jobs),"stored_count":len(rows)}
+    now=datetime.now(timezone.utc)
+    fresh=bool(rows and all((now-datetime.fromisoformat(r.fetched_at)).total_seconds()<MARKET_TTL for r in rows[:min(40,len(rows))]))
+    if not fresh:
+        try:
+            ingest_market_jobs(q=requested,location=location or "India",limit=40,s=s)
+            rows=list(s.scalars(select(MarketJob).order_by(MarketJob.fetched_at.desc()).limit(500)).all())
+        except Exception as e: print(f"Market refresh failed: {e}")
+    terms=[norm(x) for x in re.findall(r"[A-Za-z0-9+#.]+",requested) if x.strip()]
+    if terms: rows=[r for r in rows if any(t in norm(" ".join([r.title,r.company,r.description,r.skills])) for t in terms)]
+    if location: rows=[r for r in rows if location.lower() in r.location.lower() or "remote" in r.location.lower()]
+    jobs=[]
+    for r in rows[:limit]:
+        req=parts(r.skills) or _infer_skills(r.title+" "+r.description)
+        jobs.append({"id":"market-"+str(r.id),"market_job_id":r.id,"title":r.title,"company":r.company,"location":r.location,"description":r.description,"url":r.url,"created":r.created_external,"source":r.source,"skills":req,"source_category":"live_external","live":True,"fetched_at":r.fetched_at,"match":score(profile,req)["match"] if p else 0})
+    jobs.sort(key=lambda x:x.get("match",0),reverse=True)
+    return {"jobs":jobs,"source":jobs[0]["source"] if jobs else "unconfigured","fetched_at":max((r.fetched_at for r in rows),default=None),"live":bool(jobs),"stored_count":len(rows),"query":requested,"profile_skills":profile.get("skills",[])}
 
 @app.get("/api/opportunities")
 def opportunities(q:Optional[str]="",location:Optional[str]="",kind:Optional[str]="",skills:Optional[str]="",remote:Optional[bool]=None,page:int=1,limit:int=20,s:Session=Depends(db)):
@@ -309,28 +327,51 @@ def save_profile(x:ProfileIn,u:User=Depends(role("Student")),s:Session=Depends(d
     p.technical_score=x.technical_score;p.soft_score=x.soft_score;p.strengths=", ".join(x.strengths);p.gaps=", ".join(x.gaps);p.skills=", ".join(x.skills);p.interests=", ".join(x.interests);s.commit();s.refresh(p);return prof(p)
 @app.get("/api/recommendations")
 def recommendations(u:User=Depends(role("Student")),s:Session=Depends(db)):
-    p=s.scalar(select(SkillProfile).where(SkillProfile.owner_id==u.id)); profile=prof(p) if p else {"skills":[],"technical_score":0,"soft_score":0}
+    p=s.scalar(select(SkillProfile).where(SkillProfile.owner_id==u.id))
+    profile=prof(p) if p else {"skills":[],"technical_score":0,"soft_score":0,"interests":[]}
+    if p and (profile.get("skills") or profile.get("interests")):
+        q=" ".join((profile.get("skills") or [])[:5] + (profile.get("interests") or [])[:2])
+        try: ingest_market_jobs(q=q or "software engineer",location="India",limit=40,s=s)
+        except Exception as e: print(f"Recommendation market refresh failed: {e}")
     out=[{**op(o),**score(profile,parts(o.skills))} for o in s.scalars(select(Opportunity).where(Opportunity.status!="Closed")).all()]
     for j in s.scalars(select(MarketJob).order_by(MarketJob.fetched_at.desc()).limit(100)).all():
         req=parts(j.skills) or _infer_skills(j.title+" "+j.description)
-        out.append({"id":"market-"+str(j.id),"title":j.title,"type":"External Job","provider":j.company,"location":j.location,"skills":req,"description":j.description,"status":"Live","owner_id":None,"source_category":"live_external","live":True,"url":j.url,"source":j.source,**score(profile,req)})
+        out.append({"id":"market-"+str(j.id),"market_job_id":j.id,"title":j.title,"type":"External Job","provider":j.company,"location":j.location,"skills":req,"description":j.description,"status":"Live","owner_id":None,"source_category":"live_external","live":True,"url":j.url,"source":j.source,**score(profile,req)})
     return sorted(out,key=lambda x:(x["match"],x["skill_coverage"]),reverse=True)
 
 @app.post("/api/applications",status_code=201)
 def apply(x:ApplicationIn,u:User=Depends(role("Student")),s:Session=Depends(db)):
+    if x.market_job_id is not None:
+        j=s.get(MarketJob,x.market_job_id)
+        if not j: raise HTTPException(404,"Live market opportunity not found")
+        existing=s.scalar(select(ExternalApplication).where(ExternalApplication.student_id==u.id,ExternalApplication.market_job_id==j.id))
+        if existing: raise HTTPException(409,"Already tracked in your applications")
+        a=ExternalApplication(student_id=u.id,market_job_id=j.id); s.add(a)
+        s.add(Notification(user_id=u.id,type="application",title="Live opportunity tracked",message=f"{j.title} was added to your Applications. Open the employer site to complete the external application."))
+        s.commit(); s.refresh(a)
+        return {"id":"market-"+str(a.id),"status":a.status,"created_at":a.created_at,"source_category":"live_external","opportunity":{"id":"market-"+str(j.id),"market_job_id":j.id,"title":j.title,"type":"External Job","provider":j.company,"location":j.location,"skills":parts(j.skills),"url":j.url,"source":j.source,"live":True}}
+    if x.opportunity_id is None: raise HTTPException(400,"Provide opportunity_id or market_job_id")
     o=s.get(Opportunity,x.opportunity_id)
     if not o or o.status=="Closed": raise HTTPException(404,"Opportunity not available")
     if s.scalar(select(Application).where(Application.student_id==u.id,Application.opportunity_id==o.id)): raise HTTPException(409,"Already applied")
     a=Application(student_id=u.id,opportunity_id=o.id);s.add(a);s.commit();s.refresh(a)
     s.add(Notification(user_id=u.id,type="application",title="Application submitted",message=f"Your application for {o.title} was submitted."))
-    if o.owner_id:
-        s.add(Notification(user_id=o.owner_id,type="application",title="New application",message=f"{u.name} applied for {o.title}."))
+    if o.owner_id: s.add(Notification(user_id=o.owner_id,type="application",title="New application",message=f"{u.name} applied for {o.title}."))
     s.commit()
-    return {"id":a.id,"status":a.status,"opportunity":op(o)}
+    return {"id":a.id,"status":a.status,"created_at":a.created_at,"source_category":op(o)["source_category"],"opportunity":op(o)}
 @app.get("/api/applications/me")
 def applications_me(u:User=Depends(role("Student")),s:Session=Depends(db)):
-    rows=s.scalars(select(Application).where(Application.student_id==u.id).order_by(Application.id.desc())).all()
-    return [{"id":a.id,"status":a.status,"created_at":a.created_at,"opportunity":op(s.get(Opportunity,a.opportunity_id))} for a in rows]
+    internal=s.scalars(select(Application).where(Application.student_id==u.id).order_by(Application.id.desc())).all()
+    external=s.scalars(select(ExternalApplication).where(ExternalApplication.student_id==u.id).order_by(ExternalApplication.id.desc())).all()
+    out=[]
+    for a in internal:
+        o=s.get(Opportunity,a.opportunity_id)
+        if o: out.append({"id":a.id,"status":a.status,"created_at":a.created_at,"source_category":op(o)["source_category"],"opportunity":op(o)})
+    for a in external:
+        j=s.get(MarketJob,a.market_job_id)
+        if j: out.append({"id":"market-"+str(a.id),"status":a.status,"created_at":a.created_at,"source_category":"live_external","opportunity":{"id":"market-"+str(j.id),"market_job_id":j.id,"title":j.title,"type":"External Job","provider":j.company,"location":j.location,"skills":parts(j.skills),"url":j.url,"source":j.source,"live":True}})
+    return sorted(out,key=lambda x:x.get("created_at",""),reverse=True)
+
 @app.patch("/api/applications/{aid}/status")
 def application_status(aid:int,status:str,u:User=Depends(role("Industry")),s:Session=Depends(db)):
     a=s.get(Application,aid);o=s.get(Opportunity,a.opportunity_id) if a else None
