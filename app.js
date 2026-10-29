@@ -7,7 +7,49 @@ function openLogin(){document.getElementById("landing").classList.add("hidden");
 function showLanding(){$("app").classList.add("hidden");$("login").classList.add("hidden");$("landing").classList.remove("hidden")}
 function scrollToId(id){$(id)?.scrollIntoView({behavior:"smooth"})}
 function setAuthMode(m){authMode=m;$("loginTab").classList.toggle("active",m==="login");$("registerTab").classList.toggle("active",m==="register");$("authNameWrap").style.display=m==="register"?"grid":"none";$("authRoleField").style.display=m==="register"?"grid":"none";$("authOrgField").style.display=m==="register"?"grid":"none";$("authSubmit").textContent=m==="register"?"Create SkillBridge account →":"Login to SkillBridge →"}
-let authSubmitting=false;async function submitAuth(){if(authSubmitting)return;const email=$("authEmail").value.trim(),password=$("authPassword").value;if(!email||!password)return toast("Enter email and password");if(authMode==="register"&&!$("authName").value.trim())return toast("Enter your name");const btn=$("authSubmit"),original=btn.textContent;authSubmitting=true;btn.disabled=true;btn.textContent=authMode==="register"?"Creating account…":"Connecting to SkillBridge…";try{if(authMode==="register"){await apiPost("/auth/register",{name:$("authName").value.trim(),email,password,role:$("authRole").value,organization:$("authOrg").value.trim()});toast("Account created — now log in");$("authEmail").value=email;setAuthMode("login");return}const r=await apiPost("/auth/login",{email,password});if(!r||!r.user)throw new Error("The server returned an incomplete login response. Please try again.");if(r.token)localStorage.setItem("skillbridge_token",r.token);localStorage.setItem("skillbridge_user",JSON.stringify(r.user));await enter(r.user)}catch(e){toast(e.message||"Login failed. Please try again.")}finally{authSubmitting=false;btn.disabled=false;btn.textContent=$("authSubmit")?($("authSubmit").isConnected?($("authSubmit").textContent.includes("Creating account")||$("authSubmit").textContent.includes("Connecting to SkillBridge")?original:$("authSubmit").textContent):original):original}}
+let authSubmitting=false;
+async function submitAuth(event){
+ if(event&&typeof event.preventDefault==="function")event.preventDefault();
+ if(authSubmitting)return;
+ const email=$("authEmail")?.value.trim()||"";
+ const password=$("authPassword")?.value||"";
+ const name=$("authName")?.value.trim()||"";
+ if(!email||!password)return toast("Enter email and password");
+ if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))return toast("Enter a valid email address");
+ if(password.length<6)return toast("Password must be at least 6 characters");
+ if(authMode==="register"&&name.length<2)return toast("Enter your full name (at least 2 characters)");
+ const btn=$("authSubmit");
+ if(!btn)return toast("Sign-in form did not load correctly. Refresh and try again.");
+ authSubmitting=true;
+ const submittingMode=authMode;
+ btn.disabled=true;
+ btn.setAttribute("aria-busy","true");
+ btn.textContent=submittingMode==="register"?"Creating account…":"Connecting to SkillBridge…";
+ try{
+  if(submittingMode==="register"){
+   await apiPost("/auth/register",{name,email,password,role:$("authRole")?.value||"Student",organization:$("authOrg")?.value.trim()||""});
+   $("authEmail").value=email;
+   setAuthMode("login");
+   toast("Account created successfully. Log in with your email and password.");
+   return;
+  }
+  const r=await apiPost("/auth/login",{email,password});
+  if(!r||!r.user)throw new Error("The server returned an incomplete login response. Please try again.");
+  if(r.token)localStorage.setItem("skillbridge_token",r.token);
+  localStorage.setItem("skillbridge_user",JSON.stringify(r.user));
+  await enter(r.user);
+ }catch(e){
+  toast(e&&e.message?e.message:"Request failed. Please try again.");
+  console.error("SkillBridge authentication failed:",e);
+ }finally{
+  authSubmitting=false;
+  if(btn.isConnected){
+   btn.disabled=false;
+   btn.removeAttribute("aria-busy");
+   btn.textContent=authMode==="register"?"Create SkillBridge account →":"Login to SkillBridge →";
+  }
+ }
+}
 async function enter(user){state.user=user;state.role=user.role;state.page="Dashboard";$("landing").classList.add("hidden");$("login").classList.add("hidden");$("app").classList.remove("hidden");shell();state.opportunities=[];await loadBackendData();startNotificationStream();await render()}
 function shell(){$("rolePill").textContent=state.role.toUpperCase();const n=state.user?.name||"User";$("userName").textContent=n;$("userRole").textContent=state.role;$("avatar").textContent=n[0].toUpperCase();$("sideNav").innerHTML=navs[state.role].map(x=>`<button class="${x===state.page?"active":""}" onclick="go('${x}')">${x}</button>`).join("")}
 async function logout(){try{await apiPost("/auth/logout",{})}catch{}if(notificationSource){notificationSource.close();notificationSource=null}state.user=null;state.profile=null;state.recommendations=[];state.applications=[];state.enrollments=[];state.portfolio=[];state.notifications=[];localStorage.removeItem("skillbridge_user");localStorage.removeItem("skillbridge_token");showLanding()}
@@ -108,4 +150,4 @@ function placements(){return `<div class="card"><h2>Internships & Placements</h2
 async function reports(){const r=await apiGet("/institution/reports");return `<div class="card"><h2>Institution report</h2><p class="muted">Generated ${new Date(r.generated_at).toLocaleString()}</p><pre>${JSON.stringify(r.metrics,null,2)}</pre></div>`}
 function empty(x){return `<div class="empty"><h2>SkillBridge</h2><p>${x}</p></div>`}
 const pages={"Notifications":notifications,"Live Market":()=>window.renderLiveMarket?window.renderLiveMarket():empty("Loading market data…"),"Skill Assessment":assessment,"Skill Profile":profile,Recommendations:recommendations,Opportunities:opportunities,Applications:applications,Learning:learning,Portfolio:portfolio,"Collaboration Hub":collaboration,"Post Opportunity":postOpportunity,Candidates:candidates,"Faculty Opportunities":faculty,Research:collaboration,Training:collaboration,Mentorship:collaboration,"Training Programs":collaboration,"Skill Gap Analytics":skillGap,"Internships & Placements":placements,Reports:reports};
-setInterval(()=>{if(state.user&&state.page==="Live Market"&&window.renderLiveMarket)render()},300000);window.addEventListener("DOMContentLoaded",boot);
+setInterval(()=>{if(state.user&&state.page==="Live Market"&&window.renderLiveMarket)render()},300000);window.addEventListener("DOMContentLoaded",()=>{const form=$("authForm");if(form)form.addEventListener("submit",submitAuth);boot();});
