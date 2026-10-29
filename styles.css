@@ -2,3 +2,53 @@
 .market-banner{display:flex;justify-content:space-between;align-items:center;gap:24px;padding:24px;margin-bottom:24px;border:1px solid var(--line);border-radius:20px;background:linear-gradient(135deg,rgba(72,125,255,.12),rgba(255,255,255,.035))}.market-banner h2{margin:5px 0 7px}.live-tag{border-color:rgba(75,220,160,.28);color:#9ff0ca}.market-desc{min-height:55px;line-height:1.5}@media(max-width:700px){.market-banner{flex-direction:column;align-items:flex-start}}
 
 .filter-bar{display:flex;gap:10px;flex-wrap:wrap;margin:0 0 24px}.filter-bar input,.filter-bar select{min-width:180px;flex:1;padding:11px 13px;border:1px solid var(--line);border-radius:12px;background:var(--panel);color:inherit}.filter-bar .btn-sm{align-self:center}
+
+
+/* Connected assessment -> profile -> recommendations -> skill-gap journey */
+.assessment-layout{display:grid;grid-template-columns:minmax(260px,.82fr) minmax(340px,1.18fr);gap:18px;align-items:start}
+.assessment-intro{position:sticky;top:22px;background:linear-gradient(145deg,rgba(102,227,255,.09),rgba(155,123,255,.09)),var(--panel)}
+.assessment-intro h2,.profile-hero h2,.recommendation-hero h2{font-size:clamp(24px,3vw,34px);letter-spacing:-.035em;margin:12px 0}
+.assessment-steps{display:grid;gap:12px;margin:26px 0}
+.assessment-steps>div{display:flex;align-items:center;gap:12px;padding:12px;border:1px solid var(--line);border-radius:12px;background:rgba(255,255,255,.025)}
+.assessment-steps b{display:grid;place-items:center;width:34px;height:34px;flex:0 0 34px;border-radius:10px;background:rgba(102,227,255,.12);color:var(--accent)}
+.assessment-preview{padding:18px;background:rgba(0,0,0,.12);box-shadow:none}
+.assessment-preview-metric{display:flex;align-items:baseline;gap:9px;margin-top:10px}
+.assessment-preview-metric strong{font-size:30px}
+.assessment-form{padding:clamp(18px,3vw,30px)}
+.assessment-title{margin:0 0 18px}
+.assessment-note{display:flex;gap:10px;align-items:flex-start;padding:12px 14px;border:1px solid rgba(102,227,255,.18);border-radius:12px;background:rgba(102,227,255,.045);margin:18px 0}
+.assessment-note p{margin:0;color:var(--muted);font-size:13px;line-height:1.55}
+.assessment-note>span{color:var(--accent)}
+.assessment-footnote{font-size:12px;margin-bottom:0}
+.profile-hero,.recommendation-hero{display:flex;justify-content:space-between;align-items:center;gap:24px;padding:26px;margin-bottom:20px;border:1px solid var(--line);border-radius:20px;background:linear-gradient(120deg,rgba(102,227,255,.09),rgba(155,123,255,.10)),var(--panel)}
+.profile-hero>div:first-child,.recommendation-hero>div:first-child{min-width:0;flex:1}
+.profile-hero .row{margin-bottom:0}
+.profile-completion{width:min(230px,35%);padding:16px;border:1px solid var(--line);border-radius:15px;background:rgba(0,0,0,.12);display:grid;gap:8px}
+.profile-completion strong{font-size:32px;color:var(--accent)}
+.profile-completion>span{font-size:12px;color:var(--muted)}
+.profile-stats{margin-bottom:18px}
+.profile-panels .section-title{margin:0 0 16px}
+.chip-list{display:flex;flex-wrap:wrap;gap:5px;align-items:center}
+.best-match-card{border-color:rgba(102,227,255,.48);box-shadow:0 18px 55px rgba(49,151,201,.10);position:relative;overflow:hidden}
+.best-match-ribbon{margin:-22px -22px 16px;padding:9px 22px;background:linear-gradient(90deg,rgba(102,227,255,.17),rgba(155,123,255,.12));border-bottom:1px solid rgba(102,227,255,.18);font-size:11px;font-weight:800;letter-spacing:.09em;color:var(--accent)}
+.recommendation-tag{border-color:rgba(155,123,255,.3);background:rgba(155,123,255,.10)}
+.match-summary{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:16px}
+.match-summary>div{display:grid;gap:4px;padding:12px;border:1px solid var(--line);border-radius:12px;background:rgba(255,255,255,.025)}
+.match-summary strong{font-size:24px}
+.match-detail-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:14px}
+.match-detail-grid>div{padding:12px;border-radius:12px;background:rgba(255,255,255,.025);border:1px solid var(--line);min-width:0}
+.match-detail-grid b{font-size:12px}
+.match-detail-grid p{font-size:12px;color:var(--muted);line-height:1.55;overflow-wrap:anywhere;margin-bottom:0}
+.recommendation-summary{display:grid;gap:5px;justify-items:start;padding:16px 20px;border:1px solid var(--line);border-radius:15px;background:rgba(0,0,0,.12);min-width:130px}
+.recommendation-summary strong{font-size:30px}
+.recommendation-summary>span:not(.tag){font-size:12px;color:var(--muted)}
+.gap-card{background:linear-gradient(150deg,rgba(155,123,255,.06),transparent 70%),var(--panel)}
+.gap-card-top{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap}
+.profile-next-step{display:flex;align-items:center;justify-content:space-between;gap:18px;margin-top:22px;background:linear-gradient(100deg,rgba(102,227,255,.07),rgba(155,123,255,.07)),var(--panel)}
+.profile-next-step h3{margin:8px 0}
+.profile-next-step p{margin-bottom:0}
+.profile-next-step>div{min-width:0}
+.profile-next-step>.primary{flex-shrink:0}
+#assessmentSubmit{width:100%;margin-top:4px}
+@media(max-width:900px){.assessment-layout{grid-template-columns:1fr}.assessment-intro{position:static}.assessment-steps{grid-template-columns:repeat(3,minmax(0,1fr))}.assessment-steps>div{align-items:flex-start;flex-direction:column}.profile-hero,.recommendation-hero{align-items:flex-start}.profile-completion{width:200px}}
+@media(max-width:600px){.assessment-steps{grid-template-columns:1fr}.assessment-steps>div{flex-direction:row;align-items:center}.profile-hero,.recommendation-hero,.profile-next-step{flex-direction:column;align-items:stretch;padding:18px}.profile-completion{width:100%}.recommendation-summary{width:100%;grid-template-columns:auto 1fr;align-items:center}.recommendation-summary .tag{grid-column:1/-1}.match-detail-grid{grid-template-columns:1fr}.best-match-ribbon{margin:-22px -22px 14px}.profile-next-step>.primary{width:100%}}
