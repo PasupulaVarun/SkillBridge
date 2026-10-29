@@ -146,26 +146,28 @@ def score(p,required):
 
 def score_for_profile(profile, required, context=""):
     result=score(profile, required)
-    interests=[norm(x) for x in profile.get("interests",[]) if str(x).strip()]
+    raw_interests=[str(x).strip() for x in profile.get("interests",[]) if str(x).strip()]
+    interests=[norm(x) for x in raw_interests]
     if not interests:
         result["career_interest_match"]=0
         return result
+    raw_hay=str(context or "").lower()
     hay=norm(context)
-    matched=[x for x in interests if x and x in hay]
+    matched=[i for i,interest in enumerate(interests) if interest and (interest in hay or raw_interests[i].lower() in raw_hay)]
     interest_match=round(len(matched)/len(interests)*100)
     if not matched:
         tokens={t for t in re.findall(r"[a-z0-9+#.]+",hay) if len(t)>2}
-        wanted={t for interest in interests for t in re.findall(r"[a-z0-9+#.]+",interest) if len(t)>2}
+        wanted={t for value in raw_interests+interests for t in re.findall(r"[a-z0-9+#.]+",value.lower()) if len(t)>2}
         interest_match=round(len(tokens & wanted)/len(wanted)*100) if wanted else 0
     base_match=result["match"]
     result["career_interest_match"]=interest_match
     result["match"]=round(base_match*0.85+interest_match*0.15)
     result["score_breakdown"]["career_interest"]=round(interest_match*0.15,1)
-    result["score_breakdown"]["skill_coverage"]=round(result["score_breakdown"]["skill_coverage"]*0.85,1)
-    result["score_breakdown"]["semantic_similarity"]=round(result["score_breakdown"]["semantic_similarity"]*0.85,1)
-    result["score_breakdown"]["technical"]=round(result["score_breakdown"]["technical"]*0.85,1)
-    result["score_breakdown"]["soft_skills"]=round(result["score_breakdown"]["soft_skills"]*0.85,1)
+    for key in ("skill_coverage","semantic_similarity","technical","soft_skills"):
+        result["score_breakdown"][key]=round(result["score_breakdown"][key]*0.85,1)
     return result
+
+
 class Register(BaseModel): name:str=Field(min_length=2); email:EmailStr; password:str=Field(min_length=6); role:str="Student"; organization:str=""
 class Login(BaseModel): email:EmailStr; password:str
 class OpportunityIn(BaseModel): title:str; type:str="Internship"; provider:str=""; location:str="Flexible"; skills:List[str]=[]; description:str=""
