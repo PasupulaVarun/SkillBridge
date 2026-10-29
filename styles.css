@@ -52,3 +52,16 @@
 #assessmentSubmit{width:100%;margin-top:4px}
 @media(max-width:900px){.assessment-layout{grid-template-columns:1fr}.assessment-intro{position:static}.assessment-steps{grid-template-columns:repeat(3,minmax(0,1fr))}.assessment-steps>div{align-items:flex-start;flex-direction:column}.profile-hero,.recommendation-hero{align-items:flex-start}.profile-completion{width:200px}}
 @media(max-width:600px){.assessment-steps{grid-template-columns:1fr}.assessment-steps>div{flex-direction:row;align-items:center}.profile-hero,.recommendation-hero,.profile-next-step{flex-direction:column;align-items:stretch;padding:18px}.profile-completion{width:100%}.recommendation-summary{width:100%;grid-template-columns:auto 1fr;align-items:center}.recommendation-summary .tag{grid-column:1/-1}.match-detail-grid{grid-template-columns:1fr}.best-match-ribbon{margin:-22px -22px 14px}.profile-next-step>.primary{width:100%}}
+
+
+/* Application status tracking and recommendation activity */
+.application-status{display:inline-flex;align-items:center;gap:6px;padding:6px 9px;border-radius:9px;font-size:12px;font-weight:750;border:1px solid var(--line)}
+.status-pending{color:#c5d7ff;background:rgba(120,150,255,.09);border-color:rgba(120,150,255,.22)}
+.status-success{color:#8ff0bf;background:rgba(85,227,155,.09);border-color:rgba(85,227,155,.25)}
+.status-rejected{color:#ffb0bd;background:rgba(255,110,130,.08);border-color:rgba(255,110,130,.25)}
+.status-detail{display:inline-block;margin-top:5px;max-width:360px;font-size:12px;line-height:1.45}
+.status-card{display:flex;flex-direction:column;align-items:flex-start;gap:8px}
+.status-card h3,.status-card p{margin:3px 0}
+.status-card .btn-sm{margin-top:auto}
+.application-status+.muted{line-height:1.45}
+@media(max-width:700px){.table{min-width:720px}.card:has(>.table){overflow-x:auto}.status-detail{max-width:220px}}
