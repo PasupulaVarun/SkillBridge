@@ -144,6 +144,28 @@ def score(p,required):
     total=round(.55*m["skill_coverage"]+.20*m["semantic_similarity"]+.15*p.get("technical_score",0)+.10*p.get("soft_score",0))
     return {**m,"match":total,"score_breakdown":{"skill_coverage":round(.55*m["skill_coverage"],1),"semantic_similarity":round(.20*m["semantic_similarity"],1),"technical":round(.15*p.get("technical_score",0),1),"soft_skills":round(.10*p.get("soft_score",0),1)}}
 
+def score_for_profile(profile, required, context=""):
+    result=score(profile, required)
+    interests=[norm(x) for x in profile.get("interests",[]) if str(x).strip()]
+    if not interests:
+        result["career_interest_match"]=0
+        return result
+    hay=norm(context)
+    matched=[x for x in interests if x and x in hay]
+    interest_match=round(len(matched)/len(interests)*100)
+    if not matched:
+        tokens={t for t in re.findall(r"[a-z0-9+#.]+",hay) if len(t)>2}
+        wanted={t for interest in interests for t in re.findall(r"[a-z0-9+#.]+",interest) if len(t)>2}
+        interest_match=round(len(tokens & wanted)/len(wanted)*100) if wanted else 0
+    base_match=result["match"]
+    result["career_interest_match"]=interest_match
+    result["match"]=round(base_match*0.85+interest_match*0.15)
+    result["score_breakdown"]["career_interest"]=round(interest_match*0.15,1)
+    result["score_breakdown"]["skill_coverage"]=round(result["score_breakdown"]["skill_coverage"]*0.85,1)
+    result["score_breakdown"]["semantic_similarity"]=round(result["score_breakdown"]["semantic_similarity"]*0.85,1)
+    result["score_breakdown"]["technical"]=round(result["score_breakdown"]["technical"]*0.85,1)
+    result["score_breakdown"]["soft_skills"]=round(result["score_breakdown"]["soft_skills"]*0.85,1)
+    return result
 class Register(BaseModel): name:str=Field(min_length=2); email:EmailStr; password:str=Field(min_length=6); role:str="Student"; organization:str=""
 class Login(BaseModel): email:EmailStr; password:str
 class OpportunityIn(BaseModel): title:str; type:str="Internship"; provider:str=""; location:str="Flexible"; skills:List[str]=[]; description:str=""
@@ -333,12 +355,15 @@ def recommendations(u:User=Depends(role("Student")),s:Session=Depends(db)):
         q=" ".join((profile.get("skills") or [])[:5] + (profile.get("interests") or [])[:2])
         try: ingest_market_jobs(q=q or "software engineer",location="India",limit=40,s=s)
         except Exception as e: print(f"Recommendation market refresh failed: {e}")
-    out=[{**op(o),**score(profile,parts(o.skills))} for o in s.scalars(select(Opportunity).where(Opportunity.status!="Closed")).all()]
+    out=[]
+    for o in s.scalars(select(Opportunity).where(Opportunity.status!="Closed")).all():
+        context=" ".join([o.title,o.type,o.provider,o.location,o.description])
+        out.append({**op(o),**score_for_profile(profile,parts(o.skills),context)})
     for j in s.scalars(select(MarketJob).order_by(MarketJob.fetched_at.desc()).limit(100)).all():
         req=parts(j.skills) or _infer_skills(j.title+" "+j.description)
-        out.append({"id":"market-"+str(j.id),"market_job_id":j.id,"title":j.title,"type":"External Job","provider":j.company,"location":j.location,"skills":req,"description":j.description,"status":"Live","owner_id":None,"source_category":"live_external","live":True,"url":j.url,"source":j.source,**score(profile,req)})
+        context=" ".join([j.title,j.company,j.location,j.description])
+        out.append({"id":"market-"+str(j.id),"market_job_id":j.id,"title":j.title,"type":"External Job","provider":j.company,"location":j.location,"skills":req,"description":j.description,"status":"Live","owner_id":None,"source_category":"live_external","live":True,"url":j.url,"source":j.source,**score_for_profile(profile,req,context)})
     return sorted(out,key=lambda x:(x["match"],x["skill_coverage"]),reverse=True)
-
 @app.post("/api/applications",status_code=201)
 def apply(x:ApplicationIn,u:User=Depends(role("Student")),s:Session=Depends(db)):
     if x.market_job_id is not None:
@@ -428,18 +453,28 @@ def add_collab(x:CollaborationIn,u:User=Depends(role("Academician","Industry")),
 @app.get("/api/skill-gaps")
 def skill_gaps(u:User=Depends(role("Student")),s:Session=Depends(db)):
     p=s.scalar(select(SkillProfile).where(SkillProfile.owner_id==u.id))
+    profile=prof(p) if p else {"skills":[],"gaps":[]}
     have={norm(x) for x in parts(p.skills if p else "")}
     demand={}
     for o in s.scalars(select(Opportunity).where(Opportunity.status!="Closed")).all():
         for x in parts(o.skills):
-            k=norm(x); demand[k]=demand.get(k,0)+1
-    gaps=sorted(((k,n) for k,n in demand.items() if k not in have),key=lambda x:x[1],reverse=True)
+            k=norm(x)
+            demand[k]=demand.get(k,0)+1
+    for j in s.scalars(select(MarketJob)).all():
+        required=parts(j.skills) or _infer_skills(j.title+" "+j.description)
+        for x in required:
+            k=norm(x)
+            demand[k]=demand.get(k,0)+1
+    self_reported={norm(x):x for x in parts(p.gaps if p else "") if norm(x) not in have}
+    for k in self_reported:
+        demand.setdefault(k,0)
+    gaps=sorted(((k,n) for k,n in demand.items() if k not in have),key=lambda x:(x[1],x[0]),reverse=True)
     learning=[]
+    gap_keys={g[0] for g in gaps}
     for item in s.scalars(select(LearningItem)).all():
-        matched=[x for x in parts(item.skills) if norm(x) in {g[0] for g in gaps}]
-        if matched: learning.append({"id":item.id,"title":item.title,"provider":item.provider,"skills":parts(item.skills),"target_gaps":matched})
-    return {"current_skills":sorted(have),"priority_gaps":[{"skill":k,"market_demand":n,"priority":min(100,40+n*15)} for k,n in gaps[:10]],"recommended_learning":learning[:10]}
-
+        matched=[x for x in parts(item.skills) if norm(x) in gap_keys]
+        if matched: learning.append({"id":item.id,"title":item.title,"kind":item.kind,"provider":item.provider,"skills":parts(item.skills),"target_gaps":matched})
+    return {"current_skills":sorted(have),"priority_gaps":[{"skill":self_reported.get(k,k),"market_demand":n,"priority":min(100,40+n*10+(10 if k in self_reported else 0)),"self_reported":k in self_reported} for k,n in gaps[:10]],"recommended_learning":learning[:10]}
 @app.get("/api/analytics")
 def analytics(u:User=Depends(role("Institution")),s:Session=Depends(db)):
     students=s.scalar(select(func.count(User.id)).where(User.role=="Student")) or 0; profiles=s.scalar(select(func.count(SkillProfile.id))) or 0; opportunities=s.scalar(select(func.count(Opportunity.id)).where(Opportunity.status!="Closed")) or 0; apps=s.scalar(select(func.count(Application.id))) or 0; selected=s.scalar(select(func.count(Application.id)).where(Application.status=="Selected")) or 0
